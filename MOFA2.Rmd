@@ -1,0 +1,110 @@
+---
+title: "MOFA2"
+output: pdf_document
+date: "2023-08-25"
+---
+
+```{r}
+BiocManager::install("MOFA2")
+```
+
+```{r setup, include=FALSE}
+library(data.table)
+library(MOFA2)
+library(JASPAR2020)
+library(TFBSTools)
+```
+
+```{r}
+seurat <- readRDS(url("ftp://ftp.ebi.ac.uk/pub/databases/mofa/10x_rna_atac_vignette/seurat.rds"))
+```
+
+
+```{r}
+merged_seurat
+head(merged_seurat@meta.data)
+```
+
+```{r}
+merged_seurat@assays[["RNA"]]
+merged_seurat@assays[["ATAC"]]
+```
+
+
+```{r}
+pfm <- getMatrixSet(JASPAR2020,
+  opts = list(species = "Homo sapiens")
+)
+```
+
+```{r pressure, echo=FALSE}
+feature_metadata <- fread("/Users/chdoan/LMNA_EndoMT_project/MT/outs/filtered_feature_bc_matrix/features.tsv.gz") %>%
+  setnames(c("ens_id","gene","view","chr","start","end"))
+```
+
+```{r}
+feature_metadata.rna <- feature_metadata[view=="Gene Expression"]
+head(feature_metadata.rna,n=3)
+```
+
+```{r}
+feature_metadata.atac <- feature_metadata[view=="Peaks"] %>% 
+  .[,ens_id:=NULL] %>% setnames("gene","peak")
+head(feature_metadata.atac,n=3)
+```
+
+```{r}
+foo <- fread("ftp://ftp.ebi.ac.uk/pub/databases/mofa/10x_rna_atac_vignette/atac_peak_annotation.tsv") %>%
+  .[,c("peak","peak_type")] %>%
+  .[peak_type%in%c("distal", "promoter")]
+foo <- fread("/Users/chdoan/LMNA_EndoMT_project/MT/outs/atac_peak_annotation.tsv")
+foo$peak <- paste(foo$chrom, foo$start, sep = ":")
+foo$peak <- paste(foo$peak, foo$end, sep = "-")
+write.table(foo, file='test.tsv', quote=FALSE, sep='\t')
+
+foo_new <- foo %>%
+  .[,c("peak","peak_type")] %>%
+  .[peak_type%in%c("distal", "promoter")]
+
+feature_metadata.atac <- feature_metadata.atac %>% 
+  merge(foo_new,by="peak",all.x=TRUE)
+
+table(feature_metadata.atac$peak_type)
+```
+
+```{r}
+head(feature_metadata.atac)
+feature_metadata.atac[peak_type=="distal"]
+for (i in c("distal","promoter")) {
+  
+  # Create GRanges
+  peaks.granges <- feature_metadata.atac %>%
+    .[peak_type==i] %>%
+    .[,c("chr","start","end","peak")] %>%
+    makeGRangesFromDataFrame(keep.extra.columns = TRUE, ignore.strand = TRUE)
+
+  # Scan motifs throughout the DNA sequence of each peak and create a binary matrix of motif-peak presence.
+  motif.matrix <- CreateMotifMatrix(
+    features = peaks.granges,
+    pwm = pfm,
+    genome = 'hg38',
+    use.counts = FALSE
+  ) %>% as.matrix
+  
+  # AddChromatinAssay to the Seurat object
+  LMNA_MT@assays[[paste0("ATAC_",i)]] <- CreateChromatinAssay(
+    LMNA_MT@assays$ATAC@counts[peaks.granges$peak,],
+    ranges = peaks.granges,
+    motifs = CreateMotifObject(motif.matrix, pfm)
+  )
+  
+}
+LMNA_MT@assays$ATAC@counts[peaks.granges$peak,]
+
+head(LMNA_MT@assays$ATAC@counts)
+new_row_names <- sub("-", ":", rownames(LMNA_MT@assays$ATAC@counts))
+head(new_row_names)
+rownames(LMNA_MT@assays$ATAC@counts) <- new_row_names
+head(peaks.granges$peak)
+```
+
